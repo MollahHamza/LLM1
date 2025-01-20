@@ -43,23 +43,27 @@ def parse_file(filename):
             paragraphs.append(" ".join(buffer))
         return paragraphs
 
-def generate_question(paragraph):
+def generate_questions(paragraph):
     try:
         response = ollama.chat(
-            model="llama3.2:1b",
+            model="llama3.2-vision",
             messages=[{
                 "role": "system",
                 "content": """
-                Generate a multiple-choice question based on the following text. 
-                Format should be:
-                Q: [Question]
+                Generate 5 different multiple-choice questions based on the following text. 
+                Format each question as:
+                Q1: [Question]
                 A) [Option]
                 B) [Option]
                 C) [Option]
                 D) [Option]
                 Correct Answer: [A/B/C/D]
+
+                Q2: [Question]
+                ... and so on for all 5 questions.
                 
-                The correct answer must be a single letter: A, B, C, or D
+                Each correct answer must be a single letter: A, B, C, or D
+                Make sure questions are diverse and test different aspects of the text.
                 """
             },
             {"role": "user", "content": paragraph}],
@@ -68,40 +72,53 @@ def generate_question(paragraph):
         response_text = response["message"]["content"]
         print("Response Text:", response_text)  # Debugging output
 
+        questions = []
+        current_question = {}
+        
         lines = response_text.split("\n")
-        question_text = ""
-        options = []
-        correct_answer = ""
-
         for line in lines:
             line = line.strip()
-            if line.startswith("Q:"):
-                question_text = line.split("Q:", 1)[1].strip()
+            if not line:
+                continue
+                
+            if line.startswith("Q"):
+                if current_question.get("text"):  # Save previous question if exists
+                    questions.append(Question(
+                        current_question["text"],
+                        current_question["options"],
+                        current_question["correct_answer"],
+                        paragraph
+                    ))
+                current_question = {"options": []}
+                current_question["text"] = line.split(":", 1)[1].strip()
             elif line.startswith(("A)", "B)", "C)", "D)")):
-                options.append(line)
+                current_question["options"].append(line)
             elif "Correct Answer:" in line:
-                # Extract just the letter from the correct answer
                 answer_text = line.split("Correct Answer:", 1)[1].strip()
-                # Take just the first character and ensure it's uppercase
-                correct_answer = answer_text[0].upper()
+                current_question["correct_answer"] = answer_text[0].upper()
 
-        if not correct_answer or correct_answer not in ['A', 'B', 'C', 'D']:
-            raise ValueError("Invalid correct answer format in the response.")
+        # Add the last question
+        if current_question.get("text"):
+            questions.append(Question(
+                current_question["text"],
+                current_question["options"],
+                current_question["correct_answer"],
+                paragraph
+            ))
 
-        return Question(question_text, options, correct_answer, paragraph)
+        return questions
     except Exception as e:
-        print(f"Error generating question for paragraph: {e}")
-        return None
+        print(f"Error generating questions for paragraph: {e}")
+        return []
 
 def preprocess_questions(story_file, output_file):
     paragraphs = parse_file(story_file)
-    questions = []
-    for paragraph in paragraphs[:3]:  # Only process the first 3 paragraphs
-        question = generate_question(paragraph)
-        if question:
-            questions.append(question.to_dict())
+    all_questions = []
+    for paragraph in paragraphs[:3]:  # Process first 3 paragraphs
+        questions = generate_questions(paragraph)
+        all_questions.extend([q.to_dict() for q in questions])
     with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(questions, f, indent=4)
+        json.dump(all_questions, f, indent=4)
     print(f"Preprocessed questions saved to {output_file}")
 
 def load_questions(input_file):
@@ -121,6 +138,10 @@ class QuizApp:
 
     def setup_ui(self):
         self.root.title("Quiz App")
+        
+        # Progress display
+        self.progress_label = tk.Label(self.root, text="")
+        self.progress_label.pack(pady=5)
 
         # Question display
         self.question_label = tk.Label(self.root, wraplength=500, justify=tk.LEFT)
@@ -136,7 +157,7 @@ class QuizApp:
             btn = tk.Radiobutton(
                 self.options_frame,
                 variable=self.options_var,
-                value=str(i+1),  # Values as 1, 2, 3, 4
+                value=str(i+1),
                 text="",
                 wraplength=400,
                 anchor="w",
@@ -160,7 +181,12 @@ class QuizApp:
     def display_question(self):
         if self.current_question < len(self.questions):
             question = self.questions[self.current_question]
-            self.question_label.config(text=f"Question {self.current_question + 1}: {question.text}")
+            
+            # Update progress
+            self.progress_label.config(text=f"Question {self.current_question + 1} of {len(self.questions)}")
+            
+            # Display question
+            self.question_label.config(text=question.text)
             
             # Clear previous feedback
             self.feedback_label.config(text="")
@@ -183,10 +209,6 @@ class QuizApp:
 
         current_question = self.questions[self.current_question]
         correct_answer = current_question.correct_answer
-        
-        # Debug print
-        print(f"Selected answer: '{selected_answer}'")
-        print(f"Correct answer: '{correct_answer}'")
         
         # Convert answers to integers for comparison
         is_correct = int(selected_answer) == (ord(correct_answer) - ord('A') + 1)
@@ -212,9 +234,13 @@ class QuizApp:
         self.options_frame.pack_forget()
         self.submit_button.pack_forget()
         self.feedback_label.pack_forget()
+        self.progress_label.pack_forget()
+        
+        # Calculate percentage
+        percentage = (self.score / len(self.questions)) * 100
         
         # Display final score
-        final_score = f"Quiz Complete!\nYour final score: {self.score}/{len(self.questions)}"
+        final_score = f"Quiz Complete!\nYour final score: {self.score}/{len(self.questions)} ({percentage:.1f}%)"
         self.question_label.config(text=final_score)
         self.score_label.config(text="")
 
